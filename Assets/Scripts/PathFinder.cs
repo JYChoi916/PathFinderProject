@@ -6,7 +6,8 @@ using System;
 public enum PathFinderType
 {
     Dijkstra,
-    AStar
+    AStar,
+    JPS
 }
 
 public class PathFinder : MonoBehaviour
@@ -17,6 +18,8 @@ public class PathFinder : MonoBehaviour
     public TileBase wallTile;   // 벽 타일
     public TileBase pathTile;   // 경로 타일
     public PathFinderType pathFinderType = PathFinderType.Dijkstra;     // 길찾기 타입
+
+    private LineRenderer pathLine;    // 경로 라인 렌더러
 
     public bool allowDiagonal = false; // 대각선 이동 허용 옵션
 
@@ -38,6 +41,7 @@ public class PathFinder : MonoBehaviour
     void Start()
     {
         InitializeNodes();
+        InitializeLineRenderer();
     }  
 
     /// <summary>
@@ -64,6 +68,27 @@ public class PathFinder : MonoBehaviour
                 nodes[pos] = node;
             }
         }
+    }
+
+    /// <summary>
+    /// LineRenderer 초기화
+    /// </summary>
+    private void InitializeLineRenderer()
+    {
+        // LineRenderer 컴포넌트가 없다면 추가
+        pathLine = GetComponent<LineRenderer>();
+        if (pathLine == null)
+            pathLine = gameObject.AddComponent<LineRenderer>();
+
+        // LineRenderer 기본 설정
+        pathLine.startWidth = 0.1f;
+        pathLine.endWidth = 0.1f;
+        pathLine.positionCount = 0;
+        
+        // 라인 머테리얼 설정 (기본 머테리얼 사용)
+        pathLine.material = new Material(Shader.Find("Sprites/Default"));
+        pathLine.startColor = Color.yellow;
+        pathLine.endColor = Color.yellow;
     }
 
     /// <summary>
@@ -167,10 +192,13 @@ public class PathFinder : MonoBehaviour
             node.distance = Mathf.Infinity;
             node.previous = null;
             // 방문하지 않은 노드 초기화
-            openSet.Add(node);
+            if (pathFinderType != PathFinderType.JPS)
+                openSet.Add(node);
         }
 
         nodes[start].distance = 0;
+        if (pathFinderType == PathFinderType.JPS)
+            openSet.Add(nodes[start]);
 
         List<Vector2Int> newPath = new List<Vector2Int>();
         switch(pathFinderType)
@@ -180,6 +208,9 @@ public class PathFinder : MonoBehaviour
                 break;
             case PathFinderType.AStar:
                 newPath = FindPathAStar(start, end);
+                break;
+            case PathFinderType.JPS:
+                newPath = FindPathJPS(start, end);
                 break;
         }
 
@@ -318,6 +349,174 @@ public class PathFinder : MonoBehaviour
     }
 
     /// <summary>
+    /// JPS 알고리즘을 이용한 길찾기
+    /// </summary>
+    List<Vector2Int> FindPathJPS(Vector2Int start, Vector2Int end)
+    {
+        // 시작노드의 휴리스틱 값 설정
+        nodes[start].heuristic = CalculateHeuristic(start, end);
+
+        while (openSet.Count > 0)
+        {
+            Node currentNode = GetClosestUnvisitedNode();
+            nodesVisited++;
+
+            if (currentNode == null || currentNode.position == end)
+            {
+                break;
+            }
+
+            closedSet.Add(currentNode);
+            openSet.Remove(currentNode);
+
+            // 각 방향에 대해 점프 포인트 탐색
+            foreach (Vector2Int direction in GetPrimaryDirections())
+            {
+                Vector2Int jumpPoint = Jump(currentNode.position, direction, end);
+                if (jumpPoint != Vector2Int.zero)
+                {
+                    if (!nodes.ContainsKey(jumpPoint) || closedSet.Contains(nodes[jumpPoint]))
+                        continue;
+
+                    float newDistance = currentNode.distance + 
+                        GetDistance(currentNode.position, jumpPoint);
+
+                    Node jumpNode = nodes[jumpPoint];
+                    if (newDistance < jumpNode.distance)
+                    {
+                        jumpNode.distance = newDistance;
+                        jumpNode.heuristic = CalculateHeuristic(jumpPoint, end);
+                        jumpNode.previous = currentNode;
+                        openSet.Add(jumpNode);
+                    }
+                }
+            }
+        }
+
+        return BuildPath(end);
+    }
+
+    /// <summary>
+    /// 두 위치 사이의 이동이 유효한지 확인
+    /// </summary>
+    private bool IsValidMove(Vector2Int from, Vector2Int to)
+    {
+        Vector2Int diff = to - from;
+        
+        // 대각선 이동인 경우
+        if (Mathf.Abs(diff.x) == 1 && Mathf.Abs(diff.y) == 1)
+        {
+            // 대각선으로 이동할 때 양쪽 모서리에 벽이 있는지 확인
+            Vector2Int horizontal = new Vector2Int(diff.x, 0);
+            Vector2Int vertical = new Vector2Int(0, diff.y);
+            
+            // 수평 또는 수직 방향 둘다 벽이면 이동 불가
+            if (IsWall(from + horizontal) && IsWall(from + vertical))
+                return false;
+        }
+        
+        return true;
+    }
+
+    /// <summary>
+    /// 주어진 방향으로 점프 포인트를 찾음
+    /// </summary>
+    private Vector2Int Jump(Vector2Int current, Vector2Int direction, Vector2Int end)
+    {
+        Vector2Int next = current + direction;
+
+        // 맵 밖이거나 벽인 경우
+        if (!nodes.ContainsKey(next) || nodes[next].isWall || !IsValidMove(current, next))
+            return Vector2Int.zero;
+
+        // 목적지에 도달한 경우
+        if (next == end)
+            return next;
+
+        // 대각선 이동의 경우
+        if (direction.x != 0 && direction.y != 0)
+        {
+            // 수평, 수직 방향의 강제 이웃 확인
+            bool hasHorizontalForced = HasForcedNeighbour(next, new Vector2Int(direction.x, 0));
+            bool hasVerticalForced = HasForcedNeighbour(next, new Vector2Int(0, direction.y));
+            
+            // 수평 또는 수직 방향으로 강제 이웃이 있다면 현재 위치가 점프 포인트
+            if (hasHorizontalForced || hasVerticalForced)
+                return next;
+
+            // 수평, 수직 방향으로 재귀적으로 점프
+            if (Jump(next, new Vector2Int(direction.x, 0), end) != Vector2Int.zero ||
+                Jump(next, new Vector2Int(0, direction.y), end) != Vector2Int.zero)
+            {
+                return next;
+            }
+        }
+        // 수직/수평 이동의 경우
+        else
+        {
+            // 강제 이웃 확인
+            if (HasForcedNeighbour(next, direction))
+                return next;
+        }
+
+        // 점프 포인트를 찾지 못했다면 계속 진행
+        return Jump(next, direction, end);
+    }
+    
+
+    /// <summary>
+    /// 강제 이웃이 있는지 확인
+    /// </summary>
+    private bool HasForcedNeighbour(Vector2Int pos, Vector2Int direction)
+    {
+        // 수평 이동시
+        if (direction.x != 0)
+        {
+            // 위/아래 벽이 있고 대각선 방향이 열려있는지 확인
+            return (IsWall(pos + Vector2Int.up) && !IsWall(pos + direction + Vector2Int.up)) ||
+                (IsWall(pos + Vector2Int.down) && !IsWall(pos + direction + Vector2Int.down));
+        }
+        // 수직 이동시
+        else if (direction.y != 0)
+        {
+            // 좌/우 벽이 있고 대각선 방향이 열려있는지 확인
+            return (IsWall(pos + Vector2Int.left) && !IsWall(pos + direction + Vector2Int.left)) ||
+                (IsWall(pos + Vector2Int.right) && !IsWall(pos + direction + Vector2Int.right));
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 해당 위치가 벽인지 확인
+    /// </summary>
+    private bool IsWall(Vector2Int pos)
+    {
+        return !nodes.ContainsKey(pos) || nodes[pos].isWall;
+    }
+
+    /// <summary>
+    /// 모든 가능한 이동 방향 반환
+    /// </summary>
+    private IEnumerable<Vector2Int> GetPrimaryDirections()
+    {
+        // 기본 방향들(상하좌우) 반환
+        yield return Vector2Int.right;
+        yield return Vector2Int.left;
+        yield return Vector2Int.up;
+        yield return Vector2Int.down;
+
+        // 대각선 이동이 허용된 경우 대각선 방향도 반환
+        if (allowDiagonal)
+        {
+            foreach (Vector2Int dir in diagonalDirections)
+            {
+                yield return dir;
+            }
+        }
+    }
+
+    /// <summary>
     /// 도착점에서 시작점까지 역추적해서 경로 생성
     /// </summary>
     /// <param name="end"></param>
@@ -352,6 +551,30 @@ public class PathFinder : MonoBehaviour
             currentPath.Clear();
 
         currentPath = null;
+
+        pathLine.positionCount = 0;
+    }
+
+    /// <summary>
+    /// 경로 라인 그리기
+    /// </summary>
+    private void DrawPathLine(List<Vector2Int> path)
+    {
+        if (path == null || path.Count == 0)
+        {
+            pathLine.positionCount = 0;
+            return;
+        }
+
+        // 라인 포인트 개수 설정
+        pathLine.positionCount = path.Count;
+
+        // 각 경로 지점을 월드 좌표로 변환하여 라인 포인트 설정
+        for (int i = 0; i < path.Count; i++)
+        {
+            Vector3 worldPos = tileMap.GetCellCenterWorld(new Vector3Int(path[i].x, path[i].y, 0));
+            pathLine.SetPosition(i, worldPos);
+        }
     }
 
     /// <summary>
@@ -374,6 +597,8 @@ public class PathFinder : MonoBehaviour
             {
                 tileMap.SetTile(new Vector3Int(pos.x, pos.y, 0), pathTile);
             }
+
+            DrawPathLine(newPath);
         }
     }
 }

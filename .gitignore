@@ -1,8 +1,8 @@
 /.vscode
-/Assembly-CSharp-Editor.csproj
-/Assembly-CSharp.csproj
 /Library
 /Logs
-/PathFinderProject.sln
 /Temp
 /UserSettings
+.DS_Store
+*.csproj
+*.sln
