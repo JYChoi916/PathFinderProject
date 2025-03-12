@@ -27,7 +27,7 @@ public class PathFinder : MonoBehaviour
     private HashSet<Node> openSet = new HashSet<Node>();                                // 방문하지 않은 노드들
     private HashSet<Node> closedSet = new HashSet<Node>();                              // 방문한 노드들
 
-    private List<Vector2Int> currentPath = new List<Vector2Int>();                   // 현재 경로 저장
+    private List<Vector2Int> currentPath = new List<Vector2Int>();                      // 현재 경로 저장
 
 
     private readonly Vector2Int[] diagonalDirections = new Vector2Int[]
@@ -45,7 +45,7 @@ public class PathFinder : MonoBehaviour
     }  
 
     /// <summary>
-    /// 모든 타일 맵에 대하여 1:1로 노드 생성 초기화
+    /// 모든 타일 맵에 대하여 1:1로 노드 생성 & 초기화
     /// </summary>
     void InitializeNodes() 
     {
@@ -100,7 +100,7 @@ public class PathFinder : MonoBehaviour
         // 반환할 가장 가까운 노드
         Node closestNode = null;
 
-        // 가장 작은 총 비용을 가진 노드의 총 비용
+        // 가장 작은 총 비용을 가진 노드의 비용
         float minTotalCost = Mathf.Infinity;
 
         // 방문하지 않은 모든 노드에 대하여
@@ -151,6 +151,7 @@ public class PathFinder : MonoBehaviour
                     nodes[currentPosition + vertical].isWall;
 
                 // 대각선 이동 시 벽 체크 (대각선으로 벽을 통과하지 못하도록)
+                // 수직 수평 방향에 동시에 벽이 있다면 해당 대각선 방향은 이동 불가 하므로 이웃에 추가하지 않음
                 if (isWallH && isWallV)
                     continue;
 
@@ -166,13 +167,26 @@ public class PathFinder : MonoBehaviour
     /// </summary>
     int GetDistance(Vector2Int from, Vector2Int to)
     {
-        Vector2Int diff = to - from;
-        if (Mathf.Abs(diff.x) == 1 && Mathf.Abs(diff.y) == 1)
+        if (pathFinderType == PathFinderType.JPS)
         {
-            return 14;
+            // JPS의 경우 실제 이동 거리 계산
+            Vector2Int diff = to - from;
+            int dx = Mathf.Abs(diff.x);
+            int dy = Mathf.Abs(diff.y);
+            
+            // 대각선 + 직선 이동 거리 계산
+            return 14 * Mathf.Min(dx, dy) + 10 * Mathf.Abs(dx - dy);
         }
-
-        return 10;
+        else
+        {
+            // 일반적인 경우(Dijkstra, A*)
+            Vector2Int diff = to - from;
+            if (Mathf.Abs(diff.x) == 1 && Mathf.Abs(diff.y) == 1)
+            {
+                return 14; // 대각선 이동 비용
+            }
+            return 10; // 직선 이동 비용
+        }
     }
 
     int nodesVisited;
@@ -191,12 +205,14 @@ public class PathFinder : MonoBehaviour
         {
             node.distance = Mathf.Infinity;
             node.previous = null;
-            // 방문하지 않은 노드 초기화
+            // 방문하지 않은 노드 초기화 (JPS의 경우 시작점만 추가)
             if (pathFinderType != PathFinderType.JPS)
                 openSet.Add(node);
         }
 
         nodes[start].distance = 0;
+
+        // JPS의 경우 시작점만 추가해야 하므로 따로 처리
         if (pathFinderType == PathFinderType.JPS)
             openSet.Add(nodes[start]);
 
@@ -314,11 +330,11 @@ public class PathFinder : MonoBehaviour
                 break;
             }
 
-            // 현재 노드를 방문한 노드 HashSet에 추가
-            closedSet.Add(currentNode);
-
             // 현재 노드를 방문하지 않은 노드 HashSet에서 제거
             openSet.Remove(currentNode);
+
+            // 현재 노드를 방문한 노드 HashSet에 추가
+            closedSet.Add(currentNode);
 
             // 현재 노드를 기준으로 이웃들을 검사
             foreach(Vector2Int neighborPos in GetNeighbors(currentNode.position))
@@ -372,16 +388,24 @@ public class PathFinder : MonoBehaviour
             // 각 방향에 대해 점프 포인트 탐색
             foreach (Vector2Int direction in GetPrimaryDirections())
             {
+                // 현재 노드에서 주어진 방향으로 점프 포인트를 검색
                 Vector2Int jumpPoint = Jump(currentNode.position, direction, end);
+
+                // 점프 포인트가 유효한 경우
                 if (jumpPoint != Vector2Int.zero)
                 {
+                    // 점프 포인트가 이미 방문한 노드라면 스킵
                     if (!nodes.ContainsKey(jumpPoint) || closedSet.Contains(nodes[jumpPoint]))
                         continue;
 
+                    // 현재 노드에서 점프 포인트까지의 거리 계산
                     float newDistance = currentNode.distance + 
                         GetDistance(currentNode.position, jumpPoint);
 
+                    // 점프 포인트 노드 가져오기
                     Node jumpNode = nodes[jumpPoint];
+
+                    // 새로운 경로가 더 짧다면 업데이트
                     if (newDistance < jumpNode.distance)
                     {
                         jumpNode.distance = newDistance;
@@ -425,7 +449,7 @@ public class PathFinder : MonoBehaviour
     {
         Vector2Int next = current + direction;
 
-        // 맵 밖이거나 벽인 경우
+        // 맵 밖이거나 / 벽이거나 / 대각선 이동시 수평 수직방향에 둘다 벽이 존재하는 경우/ 는 진행 불가
         if (!nodes.ContainsKey(next) || nodes[next].isWall || !IsValidMove(current, next))
             return Vector2Int.zero;
 
@@ -440,16 +464,16 @@ public class PathFinder : MonoBehaviour
             bool hasHorizontalForced = HasForcedNeighbour(next, new Vector2Int(direction.x, 0));
             bool hasVerticalForced = HasForcedNeighbour(next, new Vector2Int(0, direction.y));
             
-            // 수평 또는 수직 방향으로 강제 이웃이 있다면 현재 위치가 점프 포인트
-            if (hasHorizontalForced || hasVerticalForced)
-                return next;
-
-            // 수평, 수직 방향으로 재귀적으로 점프
-            if (Jump(next, new Vector2Int(direction.x, 0), end) != Vector2Int.zero ||
+            // 강제 이웃이 있거나 수평/수직 방향으로 점프 포인트가 있으면 현재 위치가 점프 포인트
+            if (hasHorizontalForced || hasVerticalForced ||
+                Jump(next, new Vector2Int(direction.x, 0), end) != Vector2Int.zero ||
                 Jump(next, new Vector2Int(0, direction.y), end) != Vector2Int.zero)
             {
                 return next;
             }
+
+            // 대각선 방향으로 계속 점프
+            return Jump(next, direction, end);
         }
         // 수직/수평 이동의 경우
         else
@@ -477,7 +501,7 @@ public class PathFinder : MonoBehaviour
                 (IsWall(pos + Vector2Int.down) && !IsWall(pos + direction + Vector2Int.down));
         }
         // 수직 이동시
-        else if (direction.y != 0)
+        if (direction.y != 0)
         {
             // 좌/우 벽이 있고 대각선 방향이 열려있는지 확인
             return (IsWall(pos + Vector2Int.left) && !IsWall(pos + direction + Vector2Int.left)) ||
